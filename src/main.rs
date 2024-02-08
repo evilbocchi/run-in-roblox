@@ -14,6 +14,7 @@ use std::process;
 use std::{io::Read, sync::Arc};
 use tokio::{signal, sync::Mutex};
 
+use crate::place_runner::PlaceRunnerArgs;
 use crate::{
     message_receiver::{OutputLevel, RobloxMessage},
     place_runner::PlaceRunner,
@@ -24,7 +25,7 @@ enum Cli {
     Run(RunOptions),
 }
 
-#[derive(Debug, clap::Args)]
+#[derive(Debug, Clone, clap::Args)]
 #[command(author, version, about, long_about = None)]
 struct RunOptions {
     /// The script file to run
@@ -73,24 +74,15 @@ struct RunOptions {
 }
 
 async fn run(options: RunOptions) -> Result<i32> {
-    let mut script = File::open(options.script)?;
+    let mut script = File::open(&options.script)?;
     let mut str = String::default();
     script.read_to_string(&mut str)?;
 
-    let place_runner = PlaceRunner {
+    let mut place_runner = PlaceRunner::new(PlaceRunnerArgs {
         port: 7777,
         script: str,
-        universe_id: options.universe_id,
-        place_file: options.place_file,
-        place_id: options.place_id,
-        oneshot: options.oneshot,
-        no_launch: options.no_launch,
-        team_test: options.team_test,
-        creator_id: options.creator_id,
-        creator_type: options.creator_type,
-        no_exit: options.no_exit,
-        num_clients: options.num_clients,
-    };
+        opts: options
+    });
 
     let (exit_sender, exit_receiver) = async_channel::unbounded::<()>();
     let (sender, receiver) = async_channel::unbounded::<Option<RobloxMessage>>();

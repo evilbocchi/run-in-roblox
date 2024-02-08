@@ -1,14 +1,17 @@
 use std::{
-    io::{Read, Write},
-    process::{self, Command, Stdio},
+    io::{Read, Write}, process::{self, Command, Stdio}, rc::Rc, sync::Arc, time::Duration
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use fs_err::File;
-use log::info;
+use log::{error, info};
 use roblox_install::RobloxStudio;
+use tokio::time::sleep;
 
-use crate::message_receiver::{self, Message, RobloxMessage};
+use crate::{
+    message_receiver::{self, Message, RobloxMessage},
+    RunOptions,
+};
 
 /// A wrapper for `process::Child` that force-kills the process on drop.
 struct KillOnDrop(process::Child, bool);
@@ -22,25 +25,48 @@ impl Drop for KillOnDrop {
     }
 }
 
-pub struct PlaceRunner {
+pub struct PlaceRunnerArgs {
     pub port: u16,
     pub script: String,
-    pub place_file: Option<String>,
-    pub universe_id: Option<u64>,
-    pub place_id: Option<u64>,
-    pub creator_id: Option<u64>,
-    pub creator_type: Option<u8>,
-    pub num_clients: u8,
-    pub no_launch: bool,
-    pub oneshot: bool,
-    pub team_test: bool,
-    pub no_exit: bool,
+    pub opts: RunOptions,
+}
+
+pub struct PlaceRunner {
+    port: u16,
+    script: String,
+    opts: RunOptions,
+    api_svc: Option<Arc<message_receiver::Svc>>,
+    studio_process: Option<Arc<KillOnDrop>>,
+    studio_install: Option<Arc<RobloxStudio>>,
+    exit_receiver: Option<async_channel::Receiver<()>>,
+    message_recv_tx: Option<async_channel::Sender<Option<RobloxMessage>>>
 }
 
 impl PlaceRunner {
-    pub fn install_plugin() -> Result<()> {
-        let studio_install =
-            RobloxStudio::locate().context("Could not locate a Roblox Studio installation.")?;
+    pub fn new(args: PlaceRunnerArgs) -> Self {
+        Self {
+            port: args.port,
+            script: args.script,
+            opts: args.opts,
+            api_svc: None,
+            studio_process: None,
+            studio_install: None,
+            exit_receiver: None,
+            message_recv_tx: None,
+        }
+    }
+
+    pub fn get_studio_install(&mut self) -> Result<Option<Arc<RobloxStudio>>> {
+        if self.studio_install.is_none() { 
+            let studio_install =
+                RobloxStudio::locate().context("Could not locate a Roblox Studio installation.")?;
+            self.studio_install = Some(studio_install.into());
+        }
+        Ok(self.studio_install.clone())
+    }
+
+    pub fn install_plugin(&mut self) -> Result<()> {
+        let studio_install = &self.get_studio_install()?.unwrap();
 
         let mut local_plugin = match File::open("./plugin/plugin.rbxm") {
             Err(_) => {
@@ -56,45 +82,34 @@ impl PlaceRunner {
         }
 
         let plugin_file_path = studio_install.plugins_path().join("run_in_roblox.rbxm");
-
         let mut plugin_file = File::create(plugin_file_path)?;
         plugin_file.write_all(&local_plugin_data)?;
         Ok(())
     }
 
-    pub fn remove_plugin() -> Result<()> {
-        let studio_install =
-            RobloxStudio::locate().context("Could not locate a Roblox Studio installation.")?;
-
+    pub fn remove_plugin(&mut self) -> Result<()> {
+        let studio_install = self.get_studio_install()?.unwrap();
         let plugin_file_path = studio_install.plugins_path().join("run_in_roblox.rbxm");
 
         std::fs::remove_file(plugin_file_path)?;
         Ok(())
     }
 
-    pub async fn run(
-        &self,
-        sender: async_channel::Sender<Option<RobloxMessage>>,
-        exit_receiver: async_channel::Receiver<()>,
-    ) -> Result<(), anyhow::Error> {
-        let studio_install =
-            RobloxStudio::locate().context("Could not locate a Roblox Studio installation.")?;
-
-        Self::install_plugin()?;
-
-        let studio_args = match &self.team_test {
+    pub fn get_studio_args(&mut self) -> Result<Vec<String>> {
+        let studio_install = self.get_studio_install()?.unwrap();
+        let result = match &self.opts.team_test {
             true => {
                 vec![
                     "-task".to_string(),
                     "StartTeamTest".to_string(),
                     "-placeId".to_string(),
-                    format!("{:}", self.place_id.unwrap()),
+                    format!("{:}", self.opts.place_id.unwrap()),
                     "-universeId".to_string(),
-                    format!("{:}", self.universe_id.unwrap()),
+                    format!("{:}", self.opts.universe_id.unwrap()),
                 ]
             }
             false => {
-                let place_file = self.place_file.as_ref().unwrap();
+                let place_file = self.opts.place_file.as_ref().unwrap();
                 std::fs::copy(
                     place_file,
                     dbg!(studio_install.plugins_path().join("../server.rbxl")),
@@ -103,24 +118,85 @@ impl PlaceRunner {
                     "-task".to_string(),
                     "StartServer".to_string(),
                     "-placeId".to_string(),
-                    format!("{:}", self.place_id.unwrap()),
+                    format!("{:}", self.opts.place_id.unwrap()),
                     "-universeId".to_string(),
-                    format!("{:}", self.universe_id.unwrap()),
+                    format!("{:}", self.opts.universe_id.unwrap()),
                     "-creatorId".to_string(),
-                    format!("{:}", self.creator_id.unwrap()),
+                    format!("{:}", self.opts.creator_id.unwrap()),
                     "-creatorType".to_string(),
-                    format!("{:}", self.creator_type.unwrap()),
+                    format!("{:}", self.opts.creator_type.unwrap()),
                     "-numtestserverplayersuponstartup".to_string(),
-                    format!("{:}", self.num_clients),
+                    format!("{:}", self.opts.num_clients),
                 ]
             }
         };
 
-        let api_svc = message_receiver::Svc::start()
-            .await
-            .expect("api service to start");
+        Ok(result)
+    }
 
-        let studio_process = if self.no_launch {
+    pub async fn stop(
+        &mut self
+    ) -> Result<()> {
+        if let Some(api_svc) = &self.api_svc {
+            api_svc.stop().await;
+        }
+        
+        if let Some(sender) = &self.message_recv_tx {
+            sender.close();
+        }
+
+        self.remove_plugin()?;
+
+        Ok(())
+    }
+
+    pub async fn handle_server_start(
+        &self,
+        server: String
+    ) {
+        let api_svc = self.api_svc.as_ref().unwrap();
+        info!("studio server {server:} started");
+        api_svc
+            .queue_event(
+                server.clone(),
+                message_receiver::RobloxEvent::RunScript {
+                    script: self.script.clone(),
+                    oneshot: self.opts.oneshot
+                },
+            )
+            .await;
+        // By default, if "oneshot" and "no_exit" mode is specified,
+        // we don't have control over the Studio executable's lifecycle,
+        // so we'll send a "Deregister" message to Studio so that this application
+        // can exit cleanly, allowing you to re-run it again in a sort-of-"watch mode".
+        if self.opts.oneshot {
+            api_svc
+                .queue_event(server.clone(), message_receiver::RobloxEvent::Deregister {
+                    no_exit: self.opts.no_exit
+                }).await;
+        }
+    }
+
+    pub async fn run(
+        &mut self,
+        sender: async_channel::Sender<Option<RobloxMessage>>,
+        exit_receiver: async_channel::Receiver<()>,
+    ) -> Result<(), anyhow::Error> {
+        self.message_recv_tx = Some(sender);
+        self.exit_receiver = Some(exit_receiver);
+
+        self.install_plugin()?;
+
+        let studio_install = self.get_studio_install()?.unwrap();
+        let studio_args = self.get_studio_args()?;
+
+        self.api_svc = Some(
+            message_receiver::Svc::start()
+                .await
+                .expect("api service to start"),
+        );
+
+        self.studio_process = if self.opts.no_launch {
             None
         } else {
             info!("launching roblox studio with args {studio_args:?}");
@@ -130,38 +206,55 @@ impl PlaceRunner {
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .spawn()?,
-                self.no_exit,
-            ))
+                self.opts.no_exit,
+            ).into())
         };
 
+        if !self.opts.no_launch {
+            let api_svc = self.api_svc.as_ref().unwrap();
+            let exit_receiver = self.exit_receiver.as_ref().unwrap();
+            let timeout_task = async {
+                sleep(Duration::from_secs(30)).await;
+            };
+
+            let progress_bar = indicatif::ProgressBar::new_spinner().with_message("Waiting for an instance of Roblox Studio to come alive...");
+            progress_bar.enable_steady_tick(Duration::from_millis(50));
+            tokio::select! {
+                msg = api_svc.recv() => {
+                    let Message::Start { server } = msg else {
+                        return Err(anyhow!("expected first message to be received to be a server starting"))
+                    };
+                    progress_bar.finish_and_clear();
+                    self.handle_server_start(server).await;
+                },
+                _ = exit_receiver.recv() => {
+                    progress_bar.finish_and_clear();
+                    info!("ctrl-c caught, exiting now");
+                    self.stop().await?;
+                    return Ok(())
+                },
+                () = timeout_task => {
+                    error!("caught a timeout while waiting for a studio instance to start - do you need to login?");
+                    self.stop().await?;
+                    return Ok(())
+                }
+            }
+        }
+
         loop {
+            let api_svc = self.api_svc.as_ref().unwrap();
+            let exit_receiver = self.exit_receiver.as_ref().unwrap();
+            let sender = self.message_recv_tx.as_ref().unwrap();
+
             tokio::select! {
                 msg = api_svc.recv() => {
                     match msg {
                         Message::Start { server } => {
-                            info!("studio server {server:} started");
-                            //
-                            api_svc
-                                .queue_event(
-                                    server.clone(),
-                                    message_receiver::RobloxEvent::RunScript {
-                                        script: self.script.clone(),
-                                        oneshot: self.oneshot
-                                    },
-                                )
-                                .await;
-                            // By default, if "oneshot" and "no_launch" mode is specified,
-                            // we don't have control over the Studio executable's lifecycle,
-                            // so we'll send a "Deregister" message to Studio so that this application
-                            // can exit cleanly, allowing you to re-run it again in a sort-of-"watch mode".
-                            // if self.oneshot && self.no_launch {
-                            //     api_svc
-                            //         .queue_event(server.clone(), message_receiver::RobloxEvent::Deregister).await;
-                            // }
+                            self.handle_server_start(server).await;
                         }
                         Message::Stop { server } => {
                             info!("studio server {server:} stopped");
-                            if self.oneshot {
+                            if self.opts.oneshot {
                                 info!("now exiting as --oneshot was set to true.");
                                 break;
                             }
@@ -178,12 +271,8 @@ impl PlaceRunner {
                 }
             }
         }
-        // explicitly drop the studio process so it dies
-        drop(studio_process);
-        api_svc.stop().await;
-        sender.close();
-        Self::remove_plugin()?;
 
+        self.stop().await?;
         Ok(())
     }
 }

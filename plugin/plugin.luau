@@ -181,18 +181,15 @@ task.spawn(function()
       for _, v in ipairs(events) do
         if v.RunScript then
           runScript(v.RunScript.script)
-          if v.RunScript.oneshot then
-            wait(2)
-            Logger:waitForFlush()
-            -- cleanup()
-            return
-          end
         end
-        if v == "Deregister" then
+        if v.Deregister then
+          -- yes, this is immensely awful
+          wait(5)
           Logger:waitForFlush()
           cleanup()
-          SERVER_ID = HttpService:GenerateGUID(false)
-          Logger.serverId = SERVER_ID
+          if not v.Deregister.no_exit then
+            return
+          end
         end
       end
     end
