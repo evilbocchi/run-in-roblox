@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.3.2)'
+        required: true
+        default: '0.3.2'
 
 jobs:
   build-cross:
@@ -57,9 +63,14 @@ jobs:
       with:
         targets: ${{ matrix.target }}
     
-    - name: Get version from Git tag
+    - name: Get version (from tag or input)
       shell: bash
-      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      run: |
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+        else
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+        fi
     
     - name: Build
       uses: actions-rs/cargo@v1
@@ -98,6 +109,9 @@ jobs:
       with:
         files: |
           ${{ env.ASSET }}
+        tag_name: ${{ env.VERSION }}
+        name: Release ${{ env.VERSION }}
+        generate_release_notes: true
     
     - name: Setup Node.js
       uses: actions/setup-node@v3
@@ -142,9 +156,14 @@ jobs:
         node-version: 16
         registry-url: https://registry.npmjs.org/
     
-    - name: Get version from Git tag
+    - name: Get version (from tag or input)
       shell: bash
-      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      run: |
+        if [[ $GITHUB_REF == refs/tags/* ]]; then
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+        else
+          echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+        fi
     
     - name: Update and build main package
       run: |
