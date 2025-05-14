@@ -168,7 +168,8 @@ jobs:
     - name: Update and build main package
       run: |
         cd npm/app
-        npm ci
+        
+        # Update package.json with the current version
         VERSION=${{ env.VERSION }} node -e "
           const fs = require('fs');
           const pkg = require('./package.json');
@@ -178,11 +179,18 @@ jobs:
           });
           fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
         "
+        
+        # Install dev dependencies only (not the optionalDependencies)
+        npm install --no-optional --no-package-lock
+        
+        # Build the TypeScript code
         npm run build
     
     - name: Publish main package
       run: |
         cd npm/app
+        # Wait a bit to ensure all platform packages are available
+        sleep 30
         npm publish
       env:
         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
