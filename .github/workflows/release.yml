@@ -112,6 +112,7 @@ jobs:
         tag_name: ${{ env.VERSION }}
         name: Release ${{ env.VERSION }}
         generate_release_notes: true
+      continue-on-error: true
     
     - name: Setup Node.js
       uses: actions/setup-node@v3
@@ -137,7 +138,21 @@ jobs:
           chmod +x "npm/temp/${{ matrix.node_pkg }}/run-in-roblox"
         fi
     
+    - name: Check if package already exists
+      id: check_npm_version
+      shell: bash
+      run: |
+        # Check if package with this version already exists
+        if npm view ${{ matrix.node_pkg }}@${{ env.VERSION }} version &> /dev/null; then
+          echo "PACKAGE_EXISTS=true" >> $GITHUB_OUTPUT
+          echo "Package ${{ matrix.node_pkg }}@${{ env.VERSION }} already exists, skipping publish"
+        else
+          echo "PACKAGE_EXISTS=false" >> $GITHUB_OUTPUT
+          echo "Package ${{ matrix.node_pkg }}@${{ env.VERSION }} does not exist, will publish"
+        fi
+    
     - name: Publish to npm
+      if: steps.check_npm_version.outputs.PACKAGE_EXISTS == 'false'
       run: |
         cd npm/temp/${{ matrix.node_pkg }}
         npm publish
@@ -165,7 +180,21 @@ jobs:
           echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
         fi
     
+    - name: Check if main package already exists
+      id: check_main_npm_version
+      shell: bash
+      run: |
+        # Check if package with this version already exists
+        if npm view run-in-roblox@${{ env.VERSION }} version &> /dev/null; then
+          echo "PACKAGE_EXISTS=true" >> $GITHUB_OUTPUT
+          echo "Package run-in-roblox@${{ env.VERSION }} already exists, skipping publish"
+        else
+          echo "PACKAGE_EXISTS=false" >> $GITHUB_OUTPUT
+          echo "Package run-in-roblox@${{ env.VERSION }} does not exist, will publish"
+        fi
+    
     - name: Update and build main package
+      if: steps.check_main_npm_version.outputs.PACKAGE_EXISTS == 'false'
       run: |
         cd npm/app
         
@@ -187,10 +216,12 @@ jobs:
         npm run build
     
     - name: Publish main package
+      if: steps.check_main_npm_version.outputs.PACKAGE_EXISTS == 'false'
       run: |
         cd npm/app
         # Wait a bit to ensure all platform packages are available
         sleep 30
-        npm publish
+        # Add --force to override any warnings about missing optional dependencies
+        npm publish --force
       env:
         NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
