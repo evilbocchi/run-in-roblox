@@ -4,3 +4,4 @@
 *.rbxm
 *.rbxl
 .DS_Store
+**/node_modules

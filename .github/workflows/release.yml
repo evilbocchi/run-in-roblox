@@ -11,49 +11,159 @@ jobs:
     strategy:
       matrix:
         include:
-          - build: macos
+          - build: macos-x64
             runner: macos-latest
             target: x86_64-apple-darwin
-          - build: windows-gnu
+            node_pkg: run-in-roblox-darwin-x64
+            node_os: darwin
+            node_arch: x64
+          - build: macos-arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+            node_pkg: run-in-roblox-darwin-arm64
+            node_os: darwin
+            node_arch: arm64
+          - build: windows-x64
             runner: windows-latest
-            target: x86_64-pc-windows-gnu
+            target: x86_64-pc-windows-msvc
+            node_pkg: run-in-roblox-windows-x64
+            node_os: win32
+            node_arch: x64
+          - build: windows-arm64
+            runner: windows-latest
+            target: aarch64-pc-windows-msvc
+            node_pkg: run-in-roblox-windows-arm64
+            node_os: win32
+            node_arch: arm64
+          - build: linux-x64
+            runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            node_pkg: run-in-roblox-linux-x64
+            node_os: linux
+            node_arch: x64
+          - build: linux-arm64
+            runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            node_pkg: run-in-roblox-linux-arm64
+            node_os: linux
+            node_arch: arm64
     steps:
-    - uses: actions/checkout@v1
+    - uses: actions/checkout@v3
       with:
         submodules: true
+
     - name: Setup Rust toolchain
       uses: dtolnay/rust-toolchain@stable
       with:
         targets: ${{ matrix.target }}
+    
     - name: Get version from Git tag
       shell: bash
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+    
     - name: Build
       uses: actions-rs/cargo@v1
       with:
         use-cross: true
         command: build
         args: --verbose --release --target ${{ matrix.target }}
+    
+    - name: Prepare binary name
+      shell: bash
+      run: |
+        if [ "${{ matrix.node_os }}" = "win32" ]; then
+          echo "BINARY_NAME=run-in-roblox.exe" >> $GITHUB_ENV
+        else
+          echo "BINARY_NAME=run-in-roblox" >> $GITHUB_ENV
+        fi
+    
     - name: Build archive
       shell: bash
       run: |
         dirname="run-in-roblox-${{ env.VERSION }}-${{ matrix.target }}"
-        mkdir "$dirname"
-        if [ "${{ matrix.build }}" = "windows-gnu" ]; then
-          mv "target/${{ matrix.target }}/release/run-in-roblox.exe" "$dirname"
-        else
-          mv "target/${{ matrix.target }}/release/run-in-roblox" "$dirname"
-        fi
-
-        if [ "${{ matrix.build }}" = "windows-gnu" ]; then
+        mkdir -p "$dirname"
+        
+        if [ "${{ matrix.node_os }}" = "win32" ]; then
+          cp "target/${{ matrix.target }}/release/run-in-roblox.exe" "$dirname/"
           7z a "$dirname.zip" "$dirname"
           echo "ASSET=$dirname.zip" >> $GITHUB_ENV
         else
+          cp "target/${{ matrix.target }}/release/run-in-roblox" "$dirname/"
           tar -czf "$dirname.tar.gz" "$dirname"
           echo "ASSET=$dirname.tar.gz" >> $GITHUB_ENV
         fi
+    
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
           ${{ env.ASSET }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+        registry-url: https://registry.npmjs.org/
+    
+    - name: Prepare npm package
+      shell: bash
+      run: |
+        mkdir -p npm/temp/${{ matrix.node_pkg }}
+        cat npm/package.json.tmpl | \
+          sed 's|\${node_pkg}|${{ matrix.node_pkg }}|g' | \
+          sed 's|\${node_version}|${{ env.VERSION }}|g' | \
+          sed 's|\${node_os}|${{ matrix.node_os }}|g' | \
+          sed 's|\${node_arch}|${{ matrix.node_arch }}|g' \
+          > npm/temp/${{ matrix.node_pkg }}/package.json
+        
+        if [ "${{ matrix.node_os }}" = "win32" ]; then
+          cp "target/${{ matrix.target }}/release/run-in-roblox.exe" "npm/temp/${{ matrix.node_pkg }}/"
+        else
+          cp "target/${{ matrix.target }}/release/run-in-roblox" "npm/temp/${{ matrix.node_pkg }}/"
+          chmod +x "npm/temp/${{ matrix.node_pkg }}/run-in-roblox"
+        fi
+    
+    - name: Publish to npm
+      run: |
+        cd npm/temp/${{ matrix.node_pkg }}
+        npm publish
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-main-package:
+    needs: build-cross
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: 16
+        registry-url: https://registry.npmjs.org/
+    
+    - name: Get version from Git tag
+      shell: bash
+      run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+    
+    - name: Update and build main package
+      run: |
+        cd npm/app
+        npm ci
+        VERSION=${{ env.VERSION }} node -e "
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          pkg.version = process.env.VERSION;
+          Object.keys(pkg.optionalDependencies).forEach(dep => {
+            pkg.optionalDependencies[dep] = process.env.VERSION;
+          });
+          fs.writeFileSync('./package.json', JSON.stringify(pkg, null, 2));
+        "
+        npm run build
+    
+    - name: Publish main package
+      run: |
+        cd npm/app
+        npm publish
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

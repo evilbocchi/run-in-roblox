@@ -5,6 +5,17 @@ run-in-roblox pipes output from inside Roblox Studio back to stdout/stderr, whic
 
 ## Installation
 
+### Using npm (recommended)
+You can install and run run-in-roblox using npm:
+
+```bash
+# Install globally
+npm install -g run-in-roblox
+
+# Or run directly with npx without installing
+npx run-in-roblox --place MyPlace.rbxlx --script starter-script.lua
+```
+
 ### From GitHub Releases
 You can download pre-built binaries from [run-in-roblox's GitHub Releases page](https://github.com/azul-rbx/run-in-roblox/releases).
 

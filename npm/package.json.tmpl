@@ -1,10 +1,19 @@
 {
     "name": "${node_pkg}",
     "version": "${node_version}",
+    "description": "Platform-specific binary for run-in-roblox",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/azul-rbx/run-in-roblox"
+    },
+    "license": "MPL-2.0",
     "os": [
         "${node_os}"
     ],
     "cpu": [
         "${node_arch}"
+    ],
+    "files": [
+        "run-in-roblox*"
     ]
 }

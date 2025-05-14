@@ -1,27 +1,48 @@
 {
-    "name": "app",
-    "version": "0.1.0",
-    "bin": "lib/index.js",
+    "name": "run-in-roblox",
+    "version": "0.3.2",
+    "description": "Run a script inside Roblox Studio",
+    "bin": {
+        "run-in-roblox": "lib/index.js"
+    },
     "scripts": {
         "typecheck": "tsc --noEmit",
         "lint": "eslint .",
         "lint:fix": "eslint . --fix",
         "build": "tsc",
-        "dev": "yarn build && node lib/index.js"
+        "prepublishOnly": "npm run build"
+    },
+    "files": [
+        "lib/**/*"
+    ],
+    "keywords": [
+        "roblox",
+        "roblox-studio",
+        "cli",
+        "automation"
+    ],
+    "author": "Harrison Ford <harrison.ford@paradoxum.gg>",
+    "license": "MPL-2.0",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/azul-rbx/run-in-roblox"
+    },
+    "engines": {
+        "node": ">=14.0.0"
     },
     "devDependencies": {
-        "@types/node": "^18.11.18",
+        "@types/node": "^18.19.100",
         "@typescript-eslint/eslint-plugin": "^5.48.0",
         "@typescript-eslint/parser": "^5.48.0",
         "eslint": "^8.31.0",
         "typescript": "^4.9.4"
     },
     "optionalDependencies": {
-        "app-linux-x64": "0.1.0",
-        "app-linux-arm64": "0.1.0",
-        "app-darwin-x64": "0.1.0",
-        "app-darwin-arm64": "0.1.0",
-        "app-windows-x64": "0.1.0",
-        "app-windows-arm64": "0.1.0"
+        "run-in-roblox-darwin-arm64": "0.3.2",
+        "run-in-roblox-darwin-x64": "0.3.2",
+        "run-in-roblox-linux-arm64": "0.3.2",
+        "run-in-roblox-linux-x64": "0.3.2",
+        "run-in-roblox-windows-arm64": "0.3.2",
+        "run-in-roblox-windows-x64": "0.3.2"
     }
 }
